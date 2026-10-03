@@ -1,0 +1,108 @@
+"""API tests with a fake model (no model files needed)."""
+
+import io
+import zipfile
+
+import cv2
+import numpy as np
+from fastapi.testclient import TestClient
+
+from app.main import app, get_model
+from app.model import InvalidImageError, colourfulness, decode
+
+
+class FakeModel:
+    def predict(self, data: bytes) -> dict[str, object]:
+        if data == b"chest":
+            return {"is_chest_xray": True, "tb_probability": 0.9, "prediction": "TB suspected"}
+        if data == b"cat":
+            return {"is_chest_xray": False, "message": "not a chest X-ray"}
+        raise InvalidImageError("bad")
+
+
+app.dependency_overrides[get_model] = FakeModel
+client = TestClient(app)  # not used as a context manager, so startup does not load the real models
+
+
+def post(data: bytes):
+    return client.post("/api/predict", files={"file": ("x.png", data, "image/png")})
+
+
+def test_health():
+    assert client.get("/api/health").json() == {"status": "ok"}
+
+
+def test_chest_xray_is_predicted():
+    body = post(b"chest").json()
+    assert body["is_chest_xray"] is True
+    assert body["prediction"] == "TB suspected"
+    assert "disclaimer" in body
+
+
+def test_non_xray_is_rejected():
+    body = post(b"cat").json()
+    assert body["is_chest_xray"] is False
+
+
+def test_unreadable_image_is_400():
+    assert post(b"garbage").status_code == 400
+
+
+def test_too_large_is_413():
+    assert post(b"0" * (20 * 1024 * 1024 + 1)).status_code == 413
+
+
+def test_decode_and_colourfulness():
+    gray = np.full((64, 64, 3), 120, np.uint8)
+    ok, png = cv2.imencode(".png", gray)
+    assert ok
+    assert colourfulness(decode(png.tobytes())) == 0
+    colour = gray.copy()
+    colour[..., 2] = 255
+    assert colourfulness(colour) > 10
+
+
+def make_zip(files: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def post_zip(data: bytes):
+    return client.post("/api/predict-batch", files={"file": ("xrays.zip", data, "application/zip")})
+
+
+def test_batch_predicts_each_image():
+    data = make_zip(
+        {
+            "a/chest.png": b"chest",
+            "b/cat.jpg": b"cat",
+            "c/bad.jpeg": b"garbage",
+            "notes.txt": b"ignored",
+            "__MACOSX/a/._chest.png": b"ignored",
+            "folder/": b"",
+        }
+    )
+    body = post_zip(data).json()
+    assert [r["filename"] for r in body["results"]] == ["a/chest.png", "b/cat.jpg", "c/bad.jpeg"]
+    assert body["summary"] == {"total": 3, "tb_suspected": 1, "no_tb": 0, "not_accepted": 1, "errors": 1}
+    assert "error" in body["results"][2]
+    assert "disclaimer" in body
+
+
+def test_batch_not_a_zip_is_400():
+    assert post_zip(b"not a zip").status_code == 400
+
+
+def test_batch_without_images_is_400():
+    assert post_zip(make_zip({"readme.txt": b"hi"})).status_code == 400
+
+
+def test_batch_too_many_images_is_413():
+    assert post_zip(make_zip({f"{i}.png": b"chest" for i in range(51)})).status_code == 413
+
+
+def test_batch_too_large_is_413():
+    assert post_zip(b"0" * (100 * 1024 * 1024 + 1)).status_code == 413

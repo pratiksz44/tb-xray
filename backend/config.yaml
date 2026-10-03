@@ -1,0 +1,18 @@
+# TB X-ray backend settings. Used by the API (app/config.py) and by the CD workflow (.github/workflows/cd.yml).
+
+model:
+  # Where the model files are stored in Azure Blob Storage. CD downloads everything under this URL
+  # (config.json, gate_ref_feats.npy, inception_fold1..5.keras) and bakes it into the backend image.
+  blob_url: https://pratik.blob.core.windows.net/tb-classi
+  # Where the API loads the model files from (relative to backend/).
+  dir: models
+
+chest_xray_check:
+  colour_max: 10.0            # mean channel difference: X-rays are grayscale (~0), photos are 20-70
+  not_frontal_max: 0.5        # reject if the view model's P(not a frontal X-ray) is at least this
+
+api:
+  max_upload_mb: 20           # per image; keep in sync with MAX_UPLOAD_MB in frontend/src/js/app.js
+  max_zip_mb: 100             # bulk ZIP upload; keep in sync with app.js and client_max_body_size in nginx
+  max_zip_images: 50          # images per ZIP; bounded by the 240 s ingress timeout (~1-3 s per image on CPU)
+  torch_threads: 2

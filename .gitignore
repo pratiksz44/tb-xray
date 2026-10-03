@@ -1,0 +1,20 @@
+# Model files live in Blob Storage, never in git
+backend/models/*
+!backend/models/.gitkeep
+tb_export*/
+*.keras
+*.h5
+*.npz
+*.npy
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+# Local
+.env
+.DS_Store

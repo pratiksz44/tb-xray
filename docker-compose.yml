@@ -1,0 +1,15 @@
+# Local stack: backend + nginx frontend.  Put the model files in backend/models/ first.
+#   docker compose up --build      ->  http://localhost:8080
+name: tb-xray
+
+services:
+  backend:
+    build: ./backend
+
+  frontend:
+    build: ./frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+      BACKEND_HOST: backend
+    ports: ["8080:8080"]
+    depends_on: [backend]

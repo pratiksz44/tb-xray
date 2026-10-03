@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TB X-ray Screening</title>
+    <link rel="stylesheet" href="css/styles.css" />
+    <script type="module" src="js/app.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>TB chest X-ray screening</h1>
+      <p class="sub">
+        Upload a frontal (PA/AP) chest X-ray to get an estimated probability of tuberculosis, or a ZIP of X-rays
+        to screen them in bulk.
+      </p>
+
+      <div class="card">
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept="image/png,image/jpeg,.zip,application/zip" />
+          <strong>Click to choose an image or ZIP</strong> or drag it here<br />
+          <span class="small">PNG or JPEG up to 20 MB, or a ZIP of up to 50 images (100 MB)</span>
+        </label>
+
+        <div class="row" id="single">
+          <div><img id="preview" alt="Selected X-ray" hidden /></div>
+          <div id="result" class="small" aria-live="polite">No image analysed yet.</div>
+        </div>
+
+        <div id="batch" aria-live="polite" hidden></div>
+
+        <button id="go" type="button" disabled>Analyse</button>
+        <div id="error" class="error" role="alert"></div>
+      </div>
+
+      <p class="note">
+        Research prototype. This is not a medical device and does not provide a diagnosis. Uploaded images are
+        processed in memory and are not stored.
+      </p>
+    </main>
+  </body>
+</html>
