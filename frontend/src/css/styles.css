@@ -211,6 +211,10 @@ button:disabled {
   color: var(--muted);
 }
 
+.latency {
+  margin-top: 8px;
+}
+
 .error {
   color: var(--tb);
   margin-top: 12px;

@@ -106,3 +106,23 @@ def test_batch_too_many_images_is_413():
 
 def test_batch_too_large_is_413():
     assert post_zip(b"0" * (100 * 1024 * 1024 + 1)).status_code == 413
+
+
+def test_request_id_is_returned_and_logs_are_json():
+    import json
+    import logging
+
+    from app.logging_config import JsonFormatter, request_id_var
+
+    res = client.get("/api/health", headers={"X-Request-ID": "abc123"})
+    assert res.headers["X-Request-ID"] == "abc123"
+    assert res.headers["Server-Timing"].startswith("app;dur=")
+
+    token = request_id_var.set("abc123")
+    record = logging.LogRecord("app", logging.INFO, "", 0, "prediction", None, None)
+    record.tb_probability = 0.9
+    line = json.loads(JsonFormatter().format(record))
+    request_id_var.reset(token)
+    assert line["message"] == "prediction"
+    assert line["request_id"] == "abc123"
+    assert line["tb_probability"] == 0.9

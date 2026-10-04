@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import logging
+import time
 import zipfile
 import zlib
 from collections.abc import AsyncIterator
@@ -13,8 +15,12 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile
 
-from app.config import MAX_UPLOAD_MB, MAX_ZIP_IMAGES, MAX_ZIP_MB
+from app.config import LOG_LEVEL, MAX_UPLOAD_MB, MAX_ZIP_IMAGES, MAX_ZIP_MB
+from app.logging_config import log_requests, setup_logging
 from app.model import InvalidImageError, TBModel
+
+setup_logging(LOG_LEVEL)
+logger = logging.getLogger(__name__)
 
 DISCLAIMER = "Research prototype. Not a medical device and not a diagnosis."
 MB = 1024 * 1024
@@ -22,6 +28,7 @@ IMAGE_LIMIT = int(MAX_UPLOAD_MB * MB)
 ZIP_LIMIT = int(MAX_ZIP_MB * MB)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 UNREADABLE_IMAGE = "Could not read the image. Upload a PNG or JPEG chest X-ray."
+LOGGED_RESULT_FIELDS = ("is_chest_xray", "tb_probability", "prediction")
 
 
 @lru_cache(maxsize=1)
@@ -31,7 +38,9 @@ def get_model() -> TBModel:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    start = time.perf_counter()
     get_model()  # load all models once at startup
+    logger.info("models loaded", extra={"duration_s": round(time.perf_counter() - start, 1)})
     yield
 
 
@@ -42,6 +51,7 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+app.middleware("http")(log_requests)
 
 
 def read_upload(file: UploadFile, limit: int, limit_mb: float) -> bytes:
@@ -86,7 +96,9 @@ def predict(file: UploadFile, model: Annotated[TBModel, Depends(get_model)]) -> 
     try:
         result = model.predict(data)
     except InvalidImageError as exc:
+        logger.warning("unreadable image", extra={"size_bytes": len(data)})
         raise HTTPException(400, UNREADABLE_IMAGE) from exc
+    logger.info("prediction", extra={k: result.get(k) for k in LOGGED_RESULT_FIELDS})
     return {**result, "disclaimer": DISCLAIMER}
 
 
@@ -114,4 +126,5 @@ def predict_batch(file: UploadFile, model: Annotated[TBModel, Depends(get_model)
         "not_accepted": sum(r.get("is_chest_xray") is False for r in results),
         "errors": sum("error" in r for r in results),
     }
+    logger.info("batch prediction", extra=summary)
     return {"summary": summary, "results": results, "disclaimer": DISCLAIMER}

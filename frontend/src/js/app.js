@@ -14,6 +14,13 @@ let chosen = null;
 let isZip = false;
 
 const percent = (p) => `${(Math.min(Math.max(p, 0), 1) * 100).toFixed(1)}%`;
+const duration = (ms) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
+
+// Total time measured in the browser, plus the backend's own time from its Server-Timing header.
+function latencyText(totalMs, serverTiming) {
+  const server = /app;dur=([\d.]+)/.exec(serverTiming ?? "");
+  return `Analysed in ${duration(totalMs)}` + (server ? ` (server ${duration(Number(server[1]))})` : "");
+}
 
 // Build DOM nodes with textContent (never innerHTML with server data).
 function el(tag, className, text) {
@@ -62,9 +69,13 @@ function chooseZip(file) {
   batch.replaceChildren(el("p", "small", `${file.name} ready to analyse.`));
 }
 
-function showResult(data) {
+function showResult(data, latency) {
   if (!data.is_chest_xray) {
-    result.replaceChildren(el("p", "verdict warn", "Image not accepted"), el("p", undefined, data.message));
+    result.replaceChildren(
+      el("p", "verdict warn", "Image not accepted"),
+      el("p", undefined, data.message),
+      el("div", "small latency", latency),
+    );
     return;
   }
   const isTb = data.tb_probability >= data.threshold;
@@ -81,6 +92,7 @@ function showResult(data) {
     probability,
     meter,
     el("div", "small", `Marker = decision threshold (${percent(data.threshold)})`),
+    el("div", "small latency", latency),
   );
 }
 
@@ -101,7 +113,7 @@ function batchRow(item) {
   return row;
 }
 
-function showBatchResult(data) {
+function showBatchResult(data, latency) {
   const s = data.summary;
   const summary = el(
     "p",
@@ -117,7 +129,7 @@ function showBatchResult(data) {
   table.tBodies[0].append(...data.results.map(batchRow));
   const wrap = el("div", "table-wrap");
   wrap.append(table);
-  batch.replaceChildren(summary, wrap);
+  batch.replaceChildren(summary, el("p", "small", `${latency} for ${s.total} images`), wrap);
 }
 
 async function analyse() {
@@ -128,9 +140,11 @@ async function analyse() {
   try {
     const body = new FormData();
     body.append("file", chosen, chosen.name);
+    const started = performance.now();
     const res = await fetch(isZip ? "/api/predict-batch" : "/api/predict", { method: "POST", body });
     const data = await res.json().catch(() => null);
-    if (res.ok) (isZip ? showBatchResult : showResult)(data);
+    const latency = latencyText(performance.now() - started, res.headers.get("Server-Timing"));
+    if (res.ok) (isZip ? showBatchResult : showResult)(data, latency);
     else errorBox.textContent = data?.detail ?? `Request failed (${res.status})`;
   } catch {
     errorBox.textContent = "Network error. Please try again.";

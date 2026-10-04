@@ -1,12 +1,18 @@
 # Rendered at container start by the nginx image (envsubst on ${ENV_VARS} only).
 #   BACKEND_URL   e.g. https://tb-xray-api.internal.<env>.azurecontainerapps.io   (local: http://backend:8000)
 #   BACKEND_HOST  host name the backend ingress expects                          (local: backend)
+# JSON access log: total time, backend time and the request id (the backend logs the same id).
+log_format json escape=json '{"time":"$time_iso8601","request_id":"$request_id","method":"$request_method",'
+    '"path":"$uri","status":$status,"bytes":$body_bytes_sent,"duration_s":$request_time,'
+    '"upstream_status":"$upstream_status","upstream_duration_s":"$upstream_response_time"}';
+
 server {
     listen 8080;
     server_name _;
     root /usr/share/nginx/html;
     index index.html;
     server_tokens off;
+    access_log /var/log/nginx/access.log json;   # the nginx image links this file to stdout
     client_max_body_size 101m;   # bulk ZIP limit (backend config.yaml api.max_zip_mb) + slack
 
     add_header X-Content-Type-Options "nosniff" always;
