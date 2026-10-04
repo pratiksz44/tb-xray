@@ -51,6 +51,7 @@ jobs:
         run: |
           url=$(yq '.model.blob_url' backend/config.yaml)   # https://<account>.blob.core.windows.net/<container>
           account=${url#https://}; account=${account%%.*}
+          mkdir -p backend/models   # download-batch needs an existing folder
           az storage blob download-batch --auth-mode login --account-name "$account" \
             --source "${url##*/}" --destination backend/models
           ls -la backend/models
