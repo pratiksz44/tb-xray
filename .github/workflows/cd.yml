@@ -35,8 +35,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Image names
+      - name: Check settings + image names
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
+          : "${RG:?Set the AZURE_RESOURCE_GROUP variable in GitHub}"
+          : "${ACI:?Set the ACI_NAME variable in GitHub}"
+          : "${GHCR_TOKEN:?Set the GHCR_TOKEN secret in GitHub}"
           owner=${GITHUB_REPOSITORY_OWNER,,}
           echo "API_IMAGE=ghcr.io/$owner/tb-xray-api:$GITHUB_SHA" >> "$GITHUB_ENV"
           echo "WEB_IMAGE=ghcr.io/$owner/tb-xray-web:$GITHUB_SHA" >> "$GITHUB_ENV"
