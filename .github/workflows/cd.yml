@@ -1,6 +1,12 @@
 name: CD
 
-# Runs on every push to main, or manually (e.g. after uploading new model files to Blob Storage).
+# On every push to main (or manually): test, build both images, push them to ghcr.io, then
+# (re)create the existing Azure Container Instance group with the new images.
+#
+# GitHub settings needed:
+#   secrets:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID   (OIDC sign-in to Azure)
+#              GHCR_TOKEN   classic PAT with read:packages, so ACI can pull the private images
+#   variables: AZURE_RESOURCE_GROUP, ACI_NAME
 on:
   push:
     branches: [main]
@@ -8,10 +14,11 @@ on:
 
 permissions:
   contents: read
-  id-token: write # OIDC sign-in to Azure (no stored credentials)
+  packages: write # push images to ghcr.io
+  id-token: write # OIDC sign-in to Azure
 
 concurrency:
-  group: deploy-production
+  group: deploy
   cancel-in-progress: false
 
 jobs:
@@ -19,88 +26,102 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   deploy:
-    name: Build, push and deploy
     needs: ci
     runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: ${{ steps.apps.outputs.url }}
+    environment: production
     env:
       RG: ${{ vars.AZURE_RESOURCE_GROUP }}
-      PREFIX: ${{ vars.AZURE_NAME_PREFIX || 'tbx' }}
-      TAG: ${{ github.sha }}
+      ACI: ${{ vars.ACI_NAME }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Azure login (OIDC)
-        uses: azure/login@v2
+      - name: Image names
+        run: |
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          echo "API_IMAGE=ghcr.io/$owner/tb-xray-api:$GITHUB_SHA" >> "$GITHUB_ENV"
+          echo "WEB_IMAGE=ghcr.io/$owner/tb-xray-web:$GITHUB_SHA" >> "$GITHUB_ENV"
+
+      - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Shared infrastructure (idempotent)
-        id: infra
-        run: |
-          az deployment group create -g "$RG" -n "infra-${{ github.run_number }}" \
-            -f infra/main.bicep -p namePrefix="$PREFIX" deployApps=false \
-            --query properties.outputs -o json > infra.json
-          echo "acr=$(jq -r .acrName.value infra.json)" >> "$GITHUB_OUTPUT"
-          echo "registry=$(jq -r .acrLoginServer.value infra.json)" >> "$GITHUB_OUTPUT"
-          echo "storage=$(jq -r .storageAccountName.value infra.json)" >> "$GITHUB_OUTPUT"
-
       - name: Download model files (baked into the backend image)
         run: |
-          # Blob location comes from backend/config.yaml: https://<account>.blob.core.windows.net/<container>[/<prefix>]
-          url=$(yq '.model.blob_url' backend/config.yaml)
-          path=${url#https://*/}; path=${path%/}
+          url=$(yq '.model.blob_url' backend/config.yaml)   # https://<account>.blob.core.windows.net/<container>
           account=${url#https://}; account=${account%%.*}
-          container=${path%%/*}
-          prefix=${path#"$container"}; prefix=${prefix#/}
-          model_dir=backend/$(yq '.model.dir' backend/config.yaml)
           az storage blob download-batch --auth-mode login --account-name "$account" \
-            --source "$container" --pattern "${prefix:+$prefix/}*" --destination "$RUNNER_TEMP/models"
-          cp "$RUNNER_TEMP/models/$prefix"/* "$model_dir"/
-          ls -la "$model_dir"
+            --source "${url##*/}" --destination backend/models
+          ls -la backend/models
 
-      - name: Registry login
-        run: az acr login --name "${{ steps.infra.outputs.acr }}"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build + push backend
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           context: backend
           push: true
-          tags: ${{ steps.infra.outputs.registry }}/tb-xray-api:${{ env.TAG }}
+          tags: ${{ env.API_IMAGE }}
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
 
-      - name: Build + push frontend
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           context: frontend
           push: true
-          tags: ${{ steps.infra.outputs.registry }}/tb-xray-web:${{ env.TAG }}
+          tags: ${{ env.WEB_IMAGE }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
-      - name: Deploy container apps
-        id: apps
-        run: |
-          url=$(az deployment group create -g "$RG" -n "apps-${{ github.run_number }}" \
-            -f infra/main.bicep -p namePrefix="$PREFIX" deployApps=true \
-            apiImage="${{ steps.infra.outputs.registry }}/tb-xray-api:$TAG" \
-            webImage="${{ steps.infra.outputs.registry }}/tb-xray-web:$TAG" \
-            --query properties.outputs.webUrl.value -o tsv)
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-
-      - name: Smoke test through the public frontend
+      - name: Deploy to Azure Container Instances
         env:
-          URL: ${{ steps.apps.outputs.url }}
+          GHCR_USER: ${{ github.repository_owner }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
-          echo "Waiting for $URL (a cold start loads the models)..."
+          location=$(az group show -n "$RG" --query location -o tsv)
+          # One container group: nginx (public, port 8080) proxies /api to the backend on localhost:8000.
+          cat > aci.yaml <<EOF
+          apiVersion: 2021-10-01
+          name: $ACI
+          location: $location
+          type: Microsoft.ContainerInstance/containerGroups
+          properties:
+            osType: Linux
+            restartPolicy: Always
+            ipAddress:
+              type: Public
+              dnsNameLabel: $ACI
+              ports: [{ protocol: TCP, port: 8080 }]
+            imageRegistryCredentials:
+              - { server: ghcr.io, username: $GHCR_USER, password: $GHCR_TOKEN }
+            containers:
+              - name: api
+                properties:
+                  image: $API_IMAGE
+                  resources: { requests: { cpu: 2, memoryInGB: 4 } }
+              - name: web
+                properties:
+                  image: $WEB_IMAGE
+                  resources: { requests: { cpu: 0.5, memoryInGB: 0.5 } }
+                  ports: [{ port: 8080 }]
+                  environmentVariables:
+                    - { name: BACKEND_URL, value: "http://localhost:8000" }
+                    - { name: BACKEND_HOST, value: localhost }
+          EOF
+          # Delete + create: an in-place update can't change the container list or resources.
+          az container delete -g "$RG" -n "$ACI" --yes -o none 2>/dev/null || true
+          az container create -g "$RG" --file aci.yaml -o none
+          echo "URL=http://$(az container show -g "$RG" -n "$ACI" --query ipAddress.fqdn -o tsv):8080" >> "$GITHUB_ENV"
+
+      - name: Smoke test
+        run: |
+          echo "Waiting for $URL (the backend loads its models on start)..."
           for _ in $(seq 1 60); do
             curl -fs "$URL/api/health" && break
             sleep 10
