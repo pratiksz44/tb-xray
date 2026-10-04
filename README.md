@@ -49,8 +49,8 @@ Or run the full stack with Docker: `docker compose up --build` → http://localh
 ## Deploy (Azure Container Instances)
 
 CD (`.github/workflows/cd.yml`) runs on every push to `main`: tests → download model files from Blob Storage →
-build + push both images to `ghcr.io` → recreate the ACI container group (nginx on port 8080 proxying to the
-backend on localhost) → smoke test. The app is served at `http://<ACI_NAME>.<region>.azurecontainer.io:8080`.
+build + push both images to `ghcr.io` → update the ACI container group in place (nginx on port 8080 proxying to the
+backend on localhost) → smoke test. The app is served at `http://<ACI_NAME>-app.<region>.azurecontainer.io:8080`.
 
 One-time GitHub setup (Settings → Secrets and variables → Actions, plus an environment named `production`):
 
@@ -59,7 +59,7 @@ One-time GitHub setup (Settings → Secrets and variables → Actions, plus an e
 | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | secrets | Entra app with a federated credential for this repo's `production` environment |
 | `GHCR_TOKEN` | secret | classic GitHub PAT with `read:packages` (ACI uses it to pull the private images) |
 | `AZURE_RESOURCE_GROUP` | variable | resource group of the container instance |
-| `ACI_NAME` | variable | container group name (also its DNS label) |
+| `ACI_NAME` | variable | container group name (DNS label is `<ACI_NAME>-app`) |
 
 The Entra app needs **Contributor** on the resource group and **Storage Blob Data Reader** on the model storage
 account. Model files go in the container from `backend/config.yaml` → `model.blob_url`:

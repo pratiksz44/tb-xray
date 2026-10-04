@@ -1,7 +1,7 @@
 name: CD
 
 # On every push to main (or manually): test, build both images, push them to ghcr.io, then
-# (re)create the existing Azure Container Instance group with the new images.
+# update the existing Azure Container Instance group in place with the new images.
 #
 # GitHub settings needed:
 #   secrets:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID   (OIDC sign-in to Azure)
@@ -102,7 +102,7 @@ jobs:
             restartPolicy: Always
             ipAddress:
               type: Public
-              dnsNameLabel: $ACI
+              dnsNameLabel: $ACI-app   # 5-63 chars, unique per region
               ports: [{ protocol: TCP, port: 8080 }]
             imageRegistryCredentials:
               - { server: ghcr.io, username: $GHCR_USER, password: $GHCR_TOKEN }
@@ -120,8 +120,9 @@ jobs:
                     - { name: BACKEND_URL, value: "http://localhost:8000" }
                     - { name: BACKEND_HOST, value: localhost }
           EOF
-          # Delete + create: an in-place update can't change the container list or resources.
-          az container delete -g "$RG" -n "$ACI" --yes -o none 2>/dev/null || true
+          # Updates the existing group in place (new images, containers restarted); creates it if missing.
+          # If Azure says a property can't be updated (e.g. CPU/memory or container list changed), delete
+          # the group once in the portal and re-run.
           az container create -g "$RG" --file aci.yaml -o none
           echo "URL=http://$(az container show -g "$RG" -n "$ACI" --query ipAddress.fqdn -o tsv):8080" >> "$GITHUB_ENV"
 
