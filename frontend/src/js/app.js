@@ -10,6 +10,10 @@ const result = document.getElementById("result");
 const single = document.getElementById("single");
 const batch = document.getElementById("batch");
 const errorBox = document.getElementById("error");
+const loginForm = document.getElementById("login");
+const loginError = document.getElementById("login-error");
+const appCard = document.getElementById("app");
+const who = document.getElementById("who");
 let chosen = null;
 let isZip = false;
 
@@ -28,6 +32,59 @@ function el(tag, className, text) {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+// The session is an HttpOnly cookie set by /api/login; the browser sends it with every /api request.
+function showApp(username) {
+  who.textContent = username;
+  loginForm.hidden = true;
+  appCard.hidden = false;
+}
+
+function showLogin(message = "") {
+  appCard.hidden = true;
+  loginForm.hidden = false;
+  loginError.textContent = message;
+}
+
+async function checkSession() {
+  try {
+    const res = await fetch("/api/me");
+    if (res.ok) showApp((await res.json()).username);
+    else showLogin();
+  } catch {
+    showLogin("Network error. Please reload the page.");
+  }
+}
+
+async function login(event) {
+  event.preventDefault();
+  loginError.textContent = "";
+  const submit = loginForm.querySelector("button");
+  submit.disabled = true;
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById("username").value,
+        password: document.getElementById("password").value,
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok) showApp(data.username);
+    else loginError.textContent = data?.detail ?? `Sign-in failed (${res.status})`;
+  } catch {
+    loginError.textContent = "Network error. Please try again.";
+  } finally {
+    document.getElementById("password").value = "";
+    submit.disabled = false;
+  }
+}
+
+async function logout() {
+  await fetch("/api/logout", { method: "POST" }).catch(() => null);
+  showLogin();
 }
 
 function choose(file) {
@@ -145,6 +202,7 @@ async function analyse() {
     const data = await res.json().catch(() => null);
     const latency = latencyText(performance.now() - started, res.headers.get("Server-Timing"));
     if (res.ok) (isZip ? showBatchResult : showResult)(data, latency);
+    else if (res.status === 401) showLogin("Your session has expired. Please sign in again.");
     else errorBox.textContent = data?.detail ?? `Request failed (${res.status})`;
   } catch {
     errorBox.textContent = "Network error. Please try again.";
@@ -169,3 +227,6 @@ for (const ev of ["dragleave", "drop"]) {
 }
 drop.addEventListener("drop", (e) => choose(e.dataTransfer?.files[0] ?? null));
 button.addEventListener("click", analyse);
+loginForm.addEventListener("submit", login);
+document.getElementById("logout").addEventListener("click", logout);
+checkSession();

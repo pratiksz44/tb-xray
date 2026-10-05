@@ -40,11 +40,15 @@ Unzip `tb_export.zip` (from the notebook) into `backend/models/`, then:
 ```bash
 cd backend
 uv sync
-uv run uvicorn app.main:app --port 8000      # API on http://localhost:8000/api/docs
-uv run pytest && uv run ruff check .         # tests + lint
+APP_PASSWORD=<password> uv run uvicorn app.main:app --port 8000   # API on http://localhost:8000/api/docs
+uv run pytest && uv run ruff check .                              # tests + lint
 ```
 
-Or run the full stack with Docker: `docker compose up --build` → http://localhost:8080
+Or run the full stack with Docker: `APP_PASSWORD=<password> docker compose up --build` → http://localhost:8080
+
+**Login:** one user. The username is `auth.username` in `backend/config.yaml` (`pratik`). The password is the
+`APP_PASSWORD` environment variable (the `APP_PASSWORD` GitHub secret in production), so it's never in the repo.
+The prediction endpoints return 401 until you sign in.
 
 ## Branching
 
@@ -75,6 +79,7 @@ One-time GitHub setup (Settings → Secrets and variables → Actions, plus an e
 |---|---|---|
 | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | secrets | Entra app with a federated credential for this repo's `production` environment |
 | `GHCR_TOKEN` | secret | classic GitHub PAT with `read:packages` (ACI uses it to pull the private images) |
+| `APP_PASSWORD` | secret | the login password for user `pratik` |
 | `AZURE_RESOURCE_GROUP` | variable | resource group of the container instance |
 | `ACI_NAME` | variable | container group name (DNS label is `<ACI_NAME>-app`) |
 

@@ -5,8 +5,10 @@ import zipfile
 
 import cv2
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
+from app.auth import require_user
 from app.main import app, get_model
 from app.model import InvalidImageError, colourfulness, decode
 
@@ -21,6 +23,7 @@ class FakeModel:
 
 
 app.dependency_overrides[get_model] = FakeModel
+app.dependency_overrides[require_user] = lambda: "pratik"  # signed in; the login tests remove this
 client = TestClient(app)  # not used as a context manager, so startup does not load the real models
 
 
@@ -126,3 +129,42 @@ def test_request_id_is_returned_and_logs_are_json():
     assert line["message"] == "prediction"
     assert line["request_id"] == "abc123"
     assert line["tb_probability"] == 0.9
+
+
+@pytest.fixture
+def real_login(monkeypatch):
+    """Use the real login check (not the signed-in override) with a known password and no 1 s delay."""
+    monkeypatch.setenv("APP_PASSWORD", "secret-pw")
+    monkeypatch.setattr("app.main.time.sleep", lambda _: None)
+    monkeypatch.delitem(app.dependency_overrides, require_user)
+    yield TestClient(app)
+
+
+def test_predict_requires_login(real_login):
+    res = real_login.post("/api/predict", files={"file": ("x.png", b"chest", "image/png")})
+    assert res.status_code == 401
+    assert real_login.get("/api/me").status_code == 401
+
+
+def test_wrong_password_is_401(real_login):
+    res = real_login.post("/api/login", json={"username": "pratik", "password": "nope"})
+    assert res.status_code == 401
+    assert "tbx_session" not in res.cookies
+
+
+def test_login_then_predict_then_logout(real_login):
+    res = real_login.post("/api/login", json={"username": "pratik", "password": "secret-pw"})
+    assert res.status_code == 200
+    assert real_login.get("/api/me").json() == {"username": "pratik"}
+    res = real_login.post("/api/predict", files={"file": ("x.png", b"chest", "image/png")})
+    assert res.status_code == 200
+    real_login.post("/api/logout")
+    assert real_login.get("/api/me").status_code == 401
+
+
+def test_tampered_session_is_rejected(real_login):
+    from app.auth import create_session, session_user
+
+    token = create_session("pratik")
+    assert session_user(token) == "pratik"
+    assert session_user(token.replace("pratik", "admin", 1)) is None

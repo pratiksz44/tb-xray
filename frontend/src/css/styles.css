@@ -125,6 +125,51 @@ button:disabled {
   cursor: default;
 }
 
+button.link {
+  width: auto;
+  margin: 0 0 0 8px;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: inherit;
+}
+
+.login {
+  max-width: 380px;
+}
+
+.login h2 {
+  margin: 0 0 12px;
+  font-size: 1.2rem;
+}
+
+.login label {
+  display: block;
+  margin-top: 12px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.login input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.userbar {
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-align: right;
+}
+
 .verdict {
   font-size: 1.35rem;
   font-weight: 700;

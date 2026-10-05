@@ -13,8 +13,10 @@ from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
+from pydantic import BaseModel
 
+from app.auth import COOKIE_NAME, SESSION_SECONDS, check_credentials, create_session, require_user
 from app.config import LOG_LEVEL, MAX_UPLOAD_MB, MAX_ZIP_IMAGES, MAX_ZIP_MB
 from app.logger import ProcessLog
 from app.logging_config import log_requests, setup_logging
@@ -100,7 +102,42 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/api/predict")
+class Credentials(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/login")
+def login(credentials: Credentials, request: Request, response: Response) -> dict[str, str]:
+    if not check_credentials(credentials.username, credentials.password):
+        logger.warning("login failed")
+        time.sleep(1)  # slows down password guessing
+        raise HTTPException(401, "Wrong username or password.")
+    response.set_cookie(
+        COOKIE_NAME,
+        create_session(credentials.username),
+        max_age=SESSION_SECONDS,
+        path="/api",
+        httponly=True,  # not readable from JavaScript
+        samesite="strict",  # not sent by other sites (CSRF)
+        secure=request.headers.get("x-forwarded-proto") == "https",  # HTTPS-only once the site has HTTPS
+    )
+    logger.info("login", extra={"user": credentials.username})
+    return {"username": credentials.username}
+
+
+@app.post("/api/logout")
+def logout(response: Response) -> dict[str, str]:
+    response.delete_cookie(COOKIE_NAME, path="/api")
+    return {"status": "signed out"}
+
+
+@app.get("/api/me")
+def me(user: Annotated[str, Depends(require_user)]) -> dict[str, str]:
+    return {"username": user}
+
+
+@app.post("/api/predict", dependencies=[Depends(require_user)])
 def predict(file: UploadFile, model: Annotated[TBModel, Depends(get_model)]) -> dict[str, object]:
     data = read_upload(file, IMAGE_LIMIT, MAX_UPLOAD_MB)
     trace = ProcessLog()
@@ -114,7 +151,7 @@ def predict(file: UploadFile, model: Annotated[TBModel, Depends(get_model)]) -> 
     return {**result, "disclaimer": DISCLAIMER}
 
 
-@app.post("/api/predict-batch")
+@app.post("/api/predict-batch", dependencies=[Depends(require_user)])
 def predict_batch(file: UploadFile, model: Annotated[TBModel, Depends(get_model)]) -> dict[str, object]:
     """ZIP of PNG/JPEG chest X-rays -> one result per image (a bad image doesn't fail the whole batch)."""
     data = read_upload(file, ZIP_LIMIT, MAX_ZIP_MB)

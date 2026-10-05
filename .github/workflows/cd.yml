@@ -6,6 +6,7 @@ name: CD
 # GitHub settings needed:
 #   secrets:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID   (OIDC sign-in to Azure)
 #              GHCR_TOKEN   classic PAT with read:packages, so ACI can pull the private images
+#              APP_PASSWORD password of the app's single user (username: auth.username in backend/config.yaml)
 #   variables: AZURE_RESOURCE_GROUP, ACI_NAME
 on:
   push:
@@ -38,10 +39,12 @@ jobs:
       - name: Check settings + image names
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
         run: |
           : "${RG:?Set the AZURE_RESOURCE_GROUP variable in GitHub}"
           : "${ACI:?Set the ACI_NAME variable in GitHub}"
           : "${GHCR_TOKEN:?Set the GHCR_TOKEN secret in GitHub}"
+          : "${APP_PASSWORD:?Set the APP_PASSWORD secret in GitHub}"
           owner=${GITHUB_REPOSITORY_OWNER,,}
           echo "API_IMAGE=ghcr.io/$owner/tb-xray-api:$GITHUB_SHA" >> "$GITHUB_ENV"
           echo "WEB_IMAGE=ghcr.io/$owner/tb-xray-web:$GITHUB_SHA" >> "$GITHUB_ENV"
@@ -89,6 +92,7 @@ jobs:
         env:
           GHCR_USER: ${{ github.repository_owner }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
         run: |
           location=$(az group show -n "$RG" --query location -o tsv)
           # One container group: nginx (public, port 8080) proxies /api to the backend on localhost:8000.
@@ -111,6 +115,8 @@ jobs:
                 properties:
                   image: $API_IMAGE
                   resources: { requests: { cpu: 2, memoryInGB: 4 } }
+                  environmentVariables:
+                    - { name: APP_PASSWORD, secureValue: $(jq -Rn --arg p "$APP_PASSWORD" '$p') }   # hidden in Azure
               - name: web
                 properties:
                   image: $WEB_IMAGE
@@ -127,12 +133,20 @@ jobs:
           echo "URL=http://$(az container show -g "$RG" -n "$ACI" --query ipAddress.fqdn -o tsv):8080" >> "$GITHUB_ENV"
 
       - name: Smoke test
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
         run: |
           echo "Waiting for $URL (the backend loads its models on start)..."
           for _ in $(seq 1 60); do
             curl -fs "$URL/api/health" && break
             sleep 10
           done
-          code=$(curl -s -o predict.json -w '%{http_code}' -F "file=@.github/smoke/sample.png" "$URL/api/predict")
+          sample=.github/smoke/sample.png
+          echo "Without signing in, predict must be refused:"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -F "file=@$sample" "$URL/api/predict")" = "401"
+          user=$(yq '.auth.username' backend/config.yaml)
+          jq -n --arg u "$user" --arg p "$APP_PASSWORD" '{username: $u, password: $p}' |
+            curl -fs -c cookies.txt -H "Content-Type: application/json" -d @- "$URL/api/login" > /dev/null
+          code=$(curl -s -b cookies.txt -o predict.json -w '%{http_code}' -F "file=@$sample" "$URL/api/predict")
           cat predict.json; echo
           test "$code" = "200"

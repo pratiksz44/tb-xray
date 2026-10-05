@@ -15,7 +15,20 @@
         to screen them in bulk.
       </p>
 
-      <div class="card">
+      <form class="card login" id="login" hidden>
+        <h2>Sign in</h2>
+        <label>Username <input id="username" autocomplete="username" required /></label>
+        <label>Password <input id="password" type="password" autocomplete="current-password" required /></label>
+        <button type="submit">Sign in</button>
+        <div id="login-error" class="error" role="alert"></div>
+      </form>
+
+      <div class="card" id="app" hidden>
+        <div class="userbar">
+          Signed in as <strong id="who"></strong>
+          <button id="logout" type="button" class="link">Sign out</button>
+        </div>
+
         <label class="drop" id="drop">
           <input type="file" id="file" accept="image/png,image/jpeg,.zip,application/zip" />
           <strong>Click to choose an image or ZIP</strong> or drag it here<br />
