@@ -46,6 +46,23 @@ uv run pytest && uv run ruff check .         # tests + lint
 
 Or run the full stack with Docker: `docker compose up --build` → http://localhost:8080
 
+## Branching
+
+```
+feature/<name>, sprint/<n>, fix/<name> ──PR──► dev ──PR (release)──► main ──► CD deploys to Azure
+hotfix/<name> (from main) ──PR──► main, then merge main back into dev
+```
+
+| Branch | Purpose | Rules |
+|---|---|---|
+| `main` | production; every merge deploys | no direct pushes; PRs only from `dev` or `hotfix/*`; CI must pass |
+| `dev` | integration; next release | no direct pushes; PRs from feature/sprint branches; CI must pass |
+| `feature/*`, `sprint/*`, `fix/*` | day-to-day work, branched from `dev` | free to push; CI runs on every push |
+| `hotfix/*` | urgent production fix, branched from `main` | after merging, also merge `main` into `dev` |
+
+CI (`ci.yml`) runs on every push and PR. CD (`cd.yml`) runs only on `main`. `branch-policy.yml` blocks PRs
+into `main` from any other branch.
+
 ## Deploy (Azure Container Instances)
 
 CD (`.github/workflows/cd.yml`) runs on every push to `main`: tests → download model files from Blob Storage →

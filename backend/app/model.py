@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from app.config import COLOUR_MAX, MODEL_DIR, NOT_FRONTAL_MAX, TORCH_THREADS
+from app.logger import ProcessLog
 
 N_FOLDS = 5
 NOT_XRAY_MESSAGE = "This does not look like a frontal (PA/AP) chest X-ray. Please upload a chest X-ray image."
@@ -74,33 +75,70 @@ class TBModel:
         self.folds = [keras.models.load_model(p, compile=False) for p in paths]
         self._lock = threading.Lock()  # one prediction at a time per replica (bounds memory)
 
-    def is_chest_xray(self, bgr: np.ndarray, gray: np.ndarray) -> bool:
-        if colourfulness(bgr) > COLOUR_MAX:
+    def is_chest_xray(self, bgr: np.ndarray, gray: np.ndarray, trace: ProcessLog) -> bool:
+        colour = colourfulness(bgr)
+        passed = colour <= COLOUR_MAX
+        trace.step("colour_check", colourfulness=round(colour, 2), limit=COLOUR_MAX, passed=passed)
+        if colour > COLOUR_MAX:
             return False
         with self.torch.no_grad():
             logits = self.view_model(self.torch.from_numpy(xrv_normalize(gray)))
-            if float(self.torch.softmax(logits, dim=1)[0, 1]) >= NOT_FRONTAL_MAX:
+            p_not_frontal = float(self.torch.softmax(logits, dim=1)[0, 1])
+            trace.step(
+                "view_check",
+                p_not_frontal=round(p_not_frontal, 4),
+                limit=NOT_FRONTAL_MAX,
+                passed=p_not_frontal < NOT_FRONTAL_MAX,
+            )
+            if p_not_frontal >= NOT_FRONTAL_MAX:
                 return False
             small = cv2.resize(gray, (224, 224), interpolation=cv2.INTER_AREA)
             feats = self.densenet.features2(self.torch.from_numpy(xrv_normalize(small))).numpy()[0]
         # Mean cosine distance to the k nearest training X-rays (threshold calibrated during training)
         feats = feats / max(float(np.linalg.norm(feats)), 1e-8)
         distance = 1.0 - float(np.sort(self.reference @ feats)[-self.knn_k :].mean())
-        return distance <= self.knn_threshold
+        passed = distance <= self.knn_threshold
+        trace.step(
+            "similarity_check",
+            knn_distance=round(distance, 4),
+            limit=round(self.knn_threshold, 4),
+            k=self.knn_k,
+            passed=passed,
+        )
+        return passed
 
-    def predict(self, data: bytes) -> dict[str, object]:
-        bgr = decode(data)
+    def predict(self, data: bytes, trace: ProcessLog | None = None) -> dict[str, object]:
+        trace = trace or ProcessLog()
+        try:
+            bgr = decode(data)
+        except InvalidImageError:
+            trace.fail("decode", reason="not a readable PNG/JPEG")
+            raise
+        trace.step("decode", width=bgr.shape[1], height=bgr.shape[0], passed=True)
         # Resize while uint8, exactly like the training notebook.
         size = (self.img_size, self.img_size)
         gray = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), size, interpolation=cv2.INTER_AREA)
+        trace.step("preprocess", grayscale_size=self.img_size)
         with self._lock:
-            if not self.is_chest_xray(bgr, gray):
+            trace.step("model_lock")  # step_ms = time queued behind other images
+            if not self.is_chest_xray(bgr, gray, trace):
+                trace.step("result", is_chest_xray=False)
                 return {"is_chest_xray": False, "message": NOT_XRAY_MESSAGE}
             x = np.repeat(gray[None, ..., None], 3, axis=-1).astype(np.float32)  # raw 0-255, scaled in-model
-            prob = float(np.mean([np.ravel(m(x, training=False))[0] for m in self.folds]))
+            fold_probs = [float(np.ravel(m(x, training=False))[0]) for m in self.folds]
+            prob = float(np.mean(fold_probs))
+            trace.step("tb_model", fold_probabilities=[round(p, 4) for p in fold_probs], mean=round(prob, 4))
+        prediction = "TB suspected" if prob >= self.threshold else "No TB signs detected"
+        trace.step(
+            "result",
+            is_chest_xray=True,
+            tb_probability=round(prob, 4),
+            threshold=round(self.threshold, 4),
+            prediction=prediction,
+        )
         return {
             "is_chest_xray": True,
             "tb_probability": round(prob, 4),
             "threshold": round(self.threshold, 4),
-            "prediction": "TB suspected" if prob >= self.threshold else "No TB signs detected",
+            "prediction": prediction,
         }

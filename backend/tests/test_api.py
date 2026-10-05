@@ -12,7 +12,7 @@ from app.model import InvalidImageError, colourfulness, decode
 
 
 class FakeModel:
-    def predict(self, data: bytes) -> dict[str, object]:
+    def predict(self, data: bytes, trace=None) -> dict[str, object]:
         if data == b"chest":
             return {"is_chest_xray": True, "tb_probability": 0.9, "prediction": "TB suspected"}
         if data == b"cat":

@@ -16,6 +16,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, UploadFile
 
 from app.config import LOG_LEVEL, MAX_UPLOAD_MB, MAX_ZIP_IMAGES, MAX_ZIP_MB
+from app.logger import ProcessLog
 from app.logging_config import log_requests, setup_logging
 from app.model import InvalidImageError, TBModel
 
@@ -68,19 +69,28 @@ def is_zip_image(info: zipfile.ZipInfo) -> bool:
     return not info.is_dir() and not hidden and path.suffix.lower() in IMAGE_EXTENSIONS
 
 
-def predict_zip_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, model: TBModel) -> dict[str, object]:
+def predict_zip_entry(
+    zf: zipfile.ZipFile, info: zipfile.ZipInfo, model: TBModel, position: str
+) -> dict[str, object]:
     item: dict[str, object] = {"filename": info.filename}
+    trace = ProcessLog()
+    trace.step("received", source="zip", position=position, size_bytes=info.file_size)
+    too_large = f"File larger than {MAX_UPLOAD_MB:g} MB."
     if info.file_size > IMAGE_LIMIT:
-        return {**item, "error": f"File larger than {MAX_UPLOAD_MB:g} MB."}
+        trace.fail("extract", reason="too large")
+        return {**item, "error": too_large}
     try:
         with zf.open(info) as f:
             data = f.read(IMAGE_LIMIT + 1)  # don't trust the header size (zip bombs)
     except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError):
+        trace.fail("extract", reason="corrupt or encrypted")
         return {**item, "error": "Could not extract this file (corrupt or encrypted)."}
     if len(data) > IMAGE_LIMIT:
-        return {**item, "error": f"File larger than {MAX_UPLOAD_MB:g} MB."}
+        trace.fail("extract", reason="too large")
+        return {**item, "error": too_large}
+    trace.step("extract", passed=True)
     try:
-        return {**item, **model.predict(data)}
+        return {**item, **model.predict(data, trace)}
     except InvalidImageError:
         return {**item, "error": UNREADABLE_IMAGE}
 
@@ -93,8 +103,10 @@ def health() -> dict[str, str]:
 @app.post("/api/predict")
 def predict(file: UploadFile, model: Annotated[TBModel, Depends(get_model)]) -> dict[str, object]:
     data = read_upload(file, IMAGE_LIMIT, MAX_UPLOAD_MB)
+    trace = ProcessLog()
+    trace.step("received", source="upload", size_bytes=len(data))
     try:
-        result = model.predict(data)
+        result = model.predict(data, trace)
     except InvalidImageError as exc:
         logger.warning("unreadable image", extra={"size_bytes": len(data)})
         raise HTTPException(400, UNREADABLE_IMAGE) from exc
@@ -116,7 +128,8 @@ def predict_batch(file: UploadFile, model: Annotated[TBModel, Depends(get_model)
             raise HTTPException(400, "The ZIP file contains no PNG or JPEG images.")
         if len(entries) > MAX_ZIP_IMAGES:
             raise HTTPException(413, f"The ZIP has {len(entries)} images; the limit is {MAX_ZIP_IMAGES}.")
-        results = [predict_zip_entry(zf, info, model) for info in entries]
+        n = len(entries)
+        results = [predict_zip_entry(zf, info, model, f"{i}/{n}") for i, info in enumerate(entries, 1)]
 
     accepted = [r for r in results if r.get("is_chest_xray")]
     summary = {

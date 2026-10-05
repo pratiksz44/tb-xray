@@ -1,0 +1,24 @@
+name: Branch policy
+
+# main is production: it only accepts PRs from dev (a release) or hotfix/* (an urgent fix).
+# Make "PR source branch" a required status check in main's branch ruleset.
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  source-branch:
+    name: PR source branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only dev or hotfix/* may merge into main
+        env:
+          HEAD: ${{ github.head_ref }}
+        run: |
+          case "$HEAD" in
+            dev|hotfix/*) echo "OK: $HEAD -> main" ;;
+            *) echo "::error::PRs into main must come from dev or hotfix/*, not '$HEAD'. Open this PR against dev."
+               exit 1 ;;
+          esac
