@@ -3,7 +3,7 @@
 model:
   # Where the model files are stored in Azure Blob Storage. CD downloads everything under this URL
   # (config.json, gate_ref_feats.npy, inception_fold1..5.keras) and bakes it into the backend image.
-  blob_url: https://pratik.blob.core.windows.net/tb-classi
+  blob_url: https://pratiktb.blob.core.windows.net/psz
   # Where the API loads the model files from (relative to backend/).
   dir: models
 
